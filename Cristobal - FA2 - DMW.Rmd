@@ -1,0 +1,247 @@
+---
+title: "Cristobal - FA2 - DMW"
+output: html_document
+date: "2024-02-26"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+# Cristobal - FA2 - DMW
+## MLB Data
+
+### Loading Libraries
+
+```{r}
+library(dplyr)
+library(tidyverse)
+library(ggplot2)
+library(tidyr)
+library(patchwork)
+library(ggrepel)
+```
+
+### Loading Dataset
+```{r}
+load("ml_pay.rdata")
+mlb_data <- ml_pay
+```
+
+## Tidying
+
+### Splitting the Dataset into Two Tibbles
+
+#### Aggregate Tibble
+```{r}
+mlb_aggregate <- mlb_data %>%
+  select(team = Team.name.2014, payroll_aggregate = payroll, pct_wins_aggregate = avgwin)
+```
+
+#### Yearly Tibble
+```{r}
+mlb_yearly <- mlb_data %>%
+  select(team = Team.name.2014, starts_with("p"), starts_with("X")) %>%
+  pivot_longer(-team, names_to = "year_metric", values_to = "value") %>%
+  mutate(
+    year = str_extract(year_metric, "\\d{4}"),
+    metric = if_else(str_detect(year_metric, "^p"), "payroll",
+                     if_else(str_detect(year_metric, "\\.pct$"), "pct_wins", NA_character_))
+  ) %>%
+  filter(!is.na(metric)) %>%
+  mutate(year = as.numeric(year), value = as.numeric(value)) %>%
+  drop_na(value) %>%
+  group_by(team, year, metric) %>%
+  summarise(value = mean(value), .groups = 'drop') %>%
+  pivot_wider(names_from = metric, values_from = value) %>%
+  mutate(
+    num_wins = if_else(!is.na(pct_wins), round(pct_wins * 162), NA_real_)
+  ) %>%
+  select(team, year, payroll, pct_wins, num_wins)
+
+```
+
+```{r}
+print(mlb_aggregate)
+```
+
+```{r}
+print(mlb_yearly)
+```
+
+```{r}
+cat("Rows in mlb_aggregate:", nrow(mlb_aggregate), "\n")
+cat("Rows in mlb_yearly:", nrow(mlb_yearly), "\n")
+```
+
+## Quality Control 
+
+### Creating Computed and Joined Aggregate Tables
+```{r}
+mlb_aggregate_computed <- mlb_yearly %>%
+  group_by(team) %>%
+  summarise(
+    payroll_aggregate_computed = sum(payroll, na.rm = TRUE),
+    pct_wins_aggregate_computed = mean(pct_wins, na.rm = TRUE)
+  )
+
+mlb_aggregate_joined <- inner_join(mlb_aggregate, mlb_aggregate_computed, by = "team")
+```
+
+### Scatterplot: Payroll Comparison and Win Percentage Comparison 
+```{r}
+theme_set(theme_light())
+
+# Scatter plot for Payroll
+p1 <- ggplot(mlb_aggregate_joined, aes(x = payroll_aggregate, y = payroll_aggregate_computed)) +
+  geom_point(color = "blue") +
+  geom_abline(intercept = 0, slope = 1, linetype = "dashed", color = "red") +
+  labs(x = "Provided Payroll Aggregate", y = "Computed Payroll Aggregate", title = "Payroll Comparison")
+
+# Scatter plot for Win Percentage
+p2 <- ggplot(mlb_aggregate_joined, aes(x = pct_wins_aggregate, y = pct_wins_aggregate_computed)) +
+  geom_point(color = "green") +
+  geom_abline(intercept = 0, slope = 1, linetype = "dashed", color = "red") +
+  labs(x = "Provided Win Percentage Aggregate", y = "Computed Win Percentage Aggregate", title = "Win Percentage Comparison")
+
+p1 + p2
+```
+
+### Interpretation
+
+#### Payroll Comparison
+
+- The x-axis represents the provided payroll aggregate, and the y-axis represents the computed payroll aggregate.
+
+- The plot shows a positive linear trend, which indicates that as the provided payroll aggregate increases, the computed payroll aggregate also increases. A strong trend can be seen, suggesting that the provided and computed payrolls are consistent with each other. There is one point that lies far away from the main cluster on the top right, which could be an outlier or a team with a particularly high payroll.
+
+
+### 2.1 Plotting Payroll as a Function of Year for Each Team
+
+```{r}
+ggplot(mlb_yearly, aes(x = as.numeric(year), y = payroll, group = team)) + 
+  geom_line() +
+  geom_point() + 
+  geom_hline(data = mlb_yearly %>% group_by(team) %>% 
+               summarise(mean_payroll = mean(payroll, na.rm = TRUE), .groups = 'keep'),
+             aes(yintercept = mean_payroll), linetype = "dashed", color = "red") +
+  facet_wrap(~team, scales = "free_y") +
+  theme_light() +
+  labs(title = "Payroll as a Function of Year for Each Team", x = "Year (1998 - 2014)", y = "Payroll") +
+  scale_x_continuous(breaks = range(as.numeric(mlb_yearly$year)),  # Ensure range is numeric
+                     labels = c(min(mlb_yearly$year), max(mlb_yearly$year))) +
+  theme(axis.text.x = element_text(angle = 0))  # Set x-axis text angle
+
+```
+
+
+### Identifying the Three Teams with the Greatest payroll_aggregate_computed
+```{r}
+mlb_aggregate_computed %>%
+  arrange(desc(payroll_aggregate_computed)) %>%
+  slice_head(n = 3) %>%
+  print()
+```
+
+
+### Identifying the Three Teams with the Greatest Percentage Increase in Payroll from 1998 to 2014
+```{r}
+mlb_yearly %>%
+  filter(year %in% c(1998, 2014)) %>%
+  spread(year, payroll) %>%
+  mutate(pct_increase = (`2014` - `1998`) / `1998` * 100) %>%
+  select(team, payroll_1998 = `1998`, payroll_2014 = `2014`, pct_increase) %>%
+  arrange(desc(pct_increase)) %>%
+  slice_head(n = 3) %>%
+  print()
+```
+
+
+
+### 2.2 Plotting pct_wins as a Function of Year for Each Team
+
+```{r}
+mlb_yearly$year <- as.numeric(as.character(mlb_yearly$year))
+
+ggplot(mlb_yearly, aes(x = year, y = pct_wins, group = team)) +
+  geom_line() +
+  geom_point() +
+  geom_hline(data = mlb_yearly %>% group_by(team) %>%
+               summarise(mean_pct_wins = mean(pct_wins, na.rm = TRUE), .groups = 'keep'),
+             aes(yintercept = mean_pct_wins), linetype = "dashed", color = "red") +
+  facet_wrap(~team, scales = "free_y") +
+  theme_light() +
+  labs(title = "Win Percentage as a Function of Year for Each Team", x = "Year (1998 - 2014)", y = "Win Percentage") +
+  scale_x_continuous(breaks = range(mlb_yearly$year),
+                     labels = c(min(mlb_yearly$year), max(mlb_yearly$year))) +
+  theme(axis.text.x = element_text(angle = 0))
+```
+
+### Identifying the Three Teams with the Greatest pct_wins_aggregate_computed
+```{r}
+mlb_aggregate_computed %>%
+  arrange(desc(pct_wins_aggregate_computed)) %>%
+  slice_head(n = 3) %>%
+  print()
+```
+
+### Identifying the Three Teams with the Most Erratic pct_wins
+```{r}
+mlb_yearly %>%
+  group_by(team) %>%
+  summarise(pct_wins_sd = sd(pct_wins, na.rm = TRUE)) %>%
+  arrange(desc(pct_wins_sd)) %>%
+  slice_head(n = 3) %>%
+  print()
+```
+
+### 2.3 Scatterplot:
+
+```{r}
+ggplot(mlb_aggregate, aes(x = payroll_aggregate, y = pct_wins_aggregate, label = team)) +
+  geom_point() +
+  geom_text_repel() +
+  geom_smooth(method = "lm", color = "blue") +
+  theme_light() +
+  labs(title = "Relationship between Payroll and Win Percentage",
+       x = "Payroll Aggregate",
+       y = "Win Percentage Aggregate")
+```
+
+### Interpretation
+
+The relationship between payroll and win percentage in MLB is positive, as shown in the scatter plot. This aligns with expectations that financial spending can have a positive impact on a team's performance. However, the relationship is not perfect, and there are teams that outperform or underperform relative to their payroll, wchich could indicate other variables that can affect the performance outside of the pay.
+
+```{r}
+mlb_aggregate_computed %>%
+  mutate(efficiency = pct_wins_aggregate_computed / payroll_aggregate_computed) %>%
+  arrange(desc(efficiency)) %>%
+  slice_head(n = 3) %>%
+  select(team, efficiency, pct_wins_aggregate_computed, payroll_aggregate_computed)
+```
+
+### Interpretation:
+
+Teams that are more efficient will have a higher win percentage relative to their payroll, meaning they should appear further to the left (lower payroll) and/or higher up (higher win percentage) on the scatter plot. The most efficient teams are getting more wins per dollar spent compared to less efficient teams. In the scatter plot, these teams may not necessarily be the ones with the highest win percentage or the lowest payroll, but they will have a favorable ratio between payroll and percentage of wins.
+
+#### Breakdown:
+
+- Miami Marlins: With an efficiency score of approximately 0.0006688, the Miami Marlins are the most efficient team according to this metric. Their aggregate win percentage is around 46.73%, and they have a relatively low aggregate payroll of about 698.76 (the units aren't provided, but this might be in millions of dollars). This suggests that the Marlins are able to achieve a moderate level of success without a high payroll expenditure.
+
+- Oakland Athletics: The Athletics come in second with an efficiency score of approximately 0.0006062. Their aggregate win percentage is higher than the Marlins at around 53.85%, indicating a more successful performance record. They also have a higher aggregate payroll of about 888.41. Despite spending more than the Marlins, their higher win percentage gives them a favorable efficiency score.
+
+- Tampa Bay Rays: The Rays have an efficiency score of approximately 0.0005934, slightly lower than the Athletics. They have an aggregate win percentage of about 46.10%, which is slightly lower than the Marlins, but their aggregate payroll of about 776.90 is also higher than the Marlins. This positions them as third most efficient among the top three.
+
+In terms of the relationship seen in the earlier scatter plot comparing payroll to win percentage, these findings make sense. Teams like the Miami Marlins and Tampa Bay Rays, which don't have the highest payrolls, have managed a respectable win percentage, hence their high efficiency scores. The Oakland Athletics, known for their data-driven and cost-effective approach to player recruitment and team management (as seen in the book and movie "Moneyball"), show a strong win percentage despite not having one of the top payrolls, which also contributes to their high efficiency score.
+
+These teams appear efficient because they are able to achieve a competitive number of wins relative to the money they spend on their payrolls. In essence, efficiency scores suggest they are getting good value for the investments they make in their team rosters.
+
+
+
+
+
+
+
+
+
+
+
